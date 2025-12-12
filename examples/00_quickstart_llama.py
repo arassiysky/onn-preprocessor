@@ -24,9 +24,10 @@ from onnpp import ONNConfig, ONNPreprocessor
 from onnpp.hf import wrap_llama_for_onn
 
 # ONN mode:
-#   "safe"   -> projector_init="identity_like" (E_aug ≈ E, logits nearly identical)
-#   "active" -> projector_init="xavier"        (ONN features influence embeddings)
-ONN_MODE = "active"   # change to "active" to see effect
+# "safe" -> concat + identity_like
+# "active" -> concat + xavier (random, not reproducible)
+# "active_det" -> deterministic residual (recommended)
+ONN_MODE = "active_det"
 
 def _ms(t0: float, t1: float) -> float:
     return (t1 - t0) * 1000.0
@@ -85,8 +86,26 @@ def main() -> None:
 
     # Build ONN v0.L config from model hidden size
     d_model = int(model.config.hidden_size)
-    if ONN_MODE not in ("safe", "active"):
-        raise ValueError("ONN_MODE must be 'safe' or 'active'")
+    if ONN_MODE == "safe":
+        cfg = ONNConfig(d_model=d_model, feature_dim=8, projector_kind="concat", projector_init="identity_like")
+        print("\nONN_MODE=safe (concat identity_like)")
+
+    elif ONN_MODE == "active":
+        cfg = ONNConfig(d_model=d_model, feature_dim=8, projector_kind="concat", projector_init="xavier")
+        print("\nONN_MODE=active (concat xavier; random)")
+
+    elif ONN_MODE == "active_det":
+        cfg = ONNConfig(
+            d_model=d_model,
+            feature_dim=8,
+            projector_kind="residual_det",
+            epsilon=0.01,
+            seed=42,
+        )
+        print("\nONN_MODE=active_det (residual deterministic; epsilon=0.01, seed=42)")
+
+    else:
+        raise ValueError("ONN_MODE must be 'safe', 'active', or 'active_det'")
 
     projector_init = "identity_like" if ONN_MODE == "safe" else "xavier"
 

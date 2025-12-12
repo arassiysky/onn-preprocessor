@@ -7,7 +7,7 @@ import torch
 
 from onnpp.core.config import ONNConfig
 from onnpp.core.featurizer import SimpleTokenFeaturizer
-from onnpp.core.projector import ConcatProjector
+from onnpp.core.projector import ConcatProjector, ResidualDeterministicProjector
 
 
 EmbedFn = Callable[[torch.Tensor], torch.Tensor]
@@ -36,11 +36,24 @@ class ONNPreprocessor(torch.nn.Module):
             clip=config.feature_clip,
         )
 
-        self.projector = projector or ConcatProjector(
-            d_model=config.d_model,
-            feature_dim=config.feature_dim,
-            init=config.projector_init,
-        )
+        if projector is not None:
+            self.projector = projector
+        else:
+            if getattr(config, "projector_kind", "concat") == "concat":
+                self.projector = ConcatProjector(
+                    d_model=config.d_model,
+                    feature_dim=config.feature_dim,
+                    init=config.projector_init,
+                )
+            elif config.projector_kind == "residual_det":
+                self.projector = ResidualDeterministicProjector(
+                    d_model=config.d_model,
+                    feature_dim=config.feature_dim,
+                    epsilon=config.epsilon,
+                    seed=config.seed,
+                )
+            else:
+                raise ValueError(f"Unknown projector_kind: {config.projector_kind}")
 
     @torch.no_grad()
     def augment_embeddings(
