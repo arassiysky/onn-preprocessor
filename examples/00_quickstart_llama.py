@@ -26,7 +26,7 @@ from onnpp.hf import wrap_llama_for_onn
 # ONN mode:
 #   "safe"   -> projector_init="identity_like" (E_aug ≈ E, logits nearly identical)
 #   "active" -> projector_init="xavier"        (ONN features influence embeddings)
-ONN_MODE = "safe"   # change to "active" to see effect
+ONN_MODE = "active"   # change to "active" to see effect
 
 def _ms(t0: float, t1: float) -> float:
     return (t1 - t0) * 1000.0
