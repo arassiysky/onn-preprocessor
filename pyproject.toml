@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onnpp"
+version = "0.0.1a0"
+description = "ONN pre-processor (v0.L): operator-defined embedding augmentation for LLMs"
+readme = "README.md"
+requires-python = ">=3.11.9"
+authors = [
+    { name = "Andrey Rassiysky" }
+]
+
+dependencies = [
+    "torch",
+    "transformers",
+    "numpy",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
