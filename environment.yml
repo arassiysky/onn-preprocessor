@@ -1,0 +1,22 @@
+name: onn-preprocessor
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.11.9
+  - pytorch
+  - torchvision
+  - torchaudio
+  - cpuonly
+  - pip
+  - pip:
+      - transformers
+      - accelerate
+      - sentencepiece
+      - numpy
+      - scipy
+      - einops
+      - tqdm
+      - pytest
+      - black
+      - isort
