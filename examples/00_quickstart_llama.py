@@ -23,6 +23,10 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from onnpp import ONNConfig, ONNPreprocessor
 from onnpp.hf import wrap_llama_for_onn
 
+# ONN mode:
+#   "safe"   -> projector_init="identity_like" (E_aug ≈ E, logits nearly identical)
+#   "active" -> projector_init="xavier"        (ONN features influence embeddings)
+ONN_MODE = "safe"   # change to "active" to see effect
 
 def _ms(t0: float, t1: float) -> float:
     return (t1 - t0) * 1000.0
@@ -81,8 +85,20 @@ def main() -> None:
 
     # Build ONN v0.L config from model hidden size
     d_model = int(model.config.hidden_size)
-    cfg = ONNConfig.v0L(d_model=d_model, feature_dim=8)
+    if ONN_MODE not in ("safe", "active"):
+        raise ValueError("ONN_MODE must be 'safe' or 'active'")
+
+    projector_init = "identity_like" if ONN_MODE == "safe" else "xavier"
+
+    cfg = ONNConfig(
+        d_model=d_model,
+        feature_dim=8,
+        projector_init=projector_init,
+    )
+
     onn = ONNPreprocessor(cfg)
+    print(f"\nONN_MODE={ONN_MODE} (projector_init={projector_init})")
+
 
     # Wrap model with ONN
     wrap_llama_for_onn(model, onn, store_last_report=True)
