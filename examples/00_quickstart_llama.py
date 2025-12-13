@@ -117,7 +117,7 @@ def main() -> None:
             epsilon=0.001,
             seed=42,
         )
-        print("\nONN_MODE=active_det (residual deterministic; epsilon=0.01, seed=42)")
+        print("\nONN_MODE=active_det (residual deterministic; epsilon=0.001, seed=42)")
 
     else:
         raise ValueError("ONN_MODE must be 'safe', 'active', or 'active_det'")
