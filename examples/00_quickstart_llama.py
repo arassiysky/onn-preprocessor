@@ -21,7 +21,8 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from onnpp import ONNConfig, ONNPreprocessor
-from onnpp.hf import wrap_llama_for_onn
+from onnpp.hf import wrap_llama_for_onn, unwrap_llama_from_onn
+
 
 # ONN mode:
 # "safe" -> concat + identity_like
@@ -45,13 +46,24 @@ def summarize_report(report: Dict[str, Any]) -> str:
     cfg = report.get("config", {})
     f = report.get("featurizer", {})
     p = report.get("projector", {})
+
+    proj_name = p.get("projector")
+    # ConcatProjector provides in_dim/out_dim
+    if p.get("in_dim") is not None and p.get("out_dim") is not None:
+        proj_extra = f"(in={p.get('in_dim')} -> out={p.get('out_dim')})"
+    # ResidualDeterministicProjector provides epsilon/seed
+    elif p.get("epsilon") is not None or p.get("seed") is not None:
+        proj_extra = f"(epsilon={p.get('epsilon')}, seed={p.get('seed')})"
+    else:
+        proj_extra = ""
+
     return (
         f"ONN report:\n"
         f"  version: {report.get('onnpp_version')}\n"
         f"  d_model: {cfg.get('d_model')} | feature_dim: {cfg.get('feature_dim')}\n"
         f"  shapes: {shapes}\n"
         f"  featurizer: {f.get('featurizer')}\n"
-        f"  projector: {p.get('projector')} (in={p.get('in_dim')} -> out={p.get('out_dim')})\n"
+        f"  projector: {proj_name} {proj_extra}\n"
     )
 
 
@@ -62,7 +74,7 @@ def main() -> None:
     print(f"Loading model: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name)
-
+   
     # Keep CPU by default (simple + reproducible). If you want GPU:
     # device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     device = torch.device("cpu")
@@ -84,8 +96,11 @@ def main() -> None:
     print("  logits shape:", tuple(logits_base.shape))
     print(f"  forward time: {_ms(t0, t1):.2f} ms")
 
-    # Build ONN v0.L config from model hidden size
+    # -------------------------
+    # Build ONN v0.L config + preprocessor
+    # -------------------------
     d_model = int(model.config.hidden_size)
+
     if ONN_MODE == "safe":
         cfg = ONNConfig(d_model=d_model, feature_dim=8, projector_kind="concat", projector_init="identity_like")
         print("\nONN_MODE=safe (concat identity_like)")
@@ -99,7 +114,7 @@ def main() -> None:
             d_model=d_model,
             feature_dim=8,
             projector_kind="residual_det",
-            epsilon=0.01,
+            epsilon=0.001,
             seed=42,
         )
         print("\nONN_MODE=active_det (residual deterministic; epsilon=0.01, seed=42)")
@@ -107,20 +122,15 @@ def main() -> None:
     else:
         raise ValueError("ONN_MODE must be 'safe', 'active', or 'active_det'")
 
-    projector_init = "identity_like" if ONN_MODE == "safe" else "xavier"
-
-    cfg = ONNConfig(
-        d_model=d_model,
-        feature_dim=8,
-        projector_init=projector_init,
-    )
-
     onn = ONNPreprocessor(cfg)
-    print(f"\nONN_MODE={ONN_MODE} (projector_init={projector_init})")
 
-
-    # Wrap model with ONN
+    # -------------------------
+    # Wrap model with ONN (avoid stacking wrappers)
+    # -------------------------
+    unwrap_llama_from_onn(model)
     wrap_llama_for_onn(model, onn, store_last_report=True)
+    print("Wrapped model projector =", type(model.onn_preprocessor.projector).__name__)
+
 
     # Warm-up ONN path
     _ = run_forward(model, inputs)
