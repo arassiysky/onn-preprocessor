@@ -69,7 +69,10 @@ def summarize_report(report: Dict[str, Any]) -> str:
 
 def main() -> None:
     model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    prompt = "Hello world."
+    prompt = (
+    "This is a simple example to check whether operator gated "
+    "compression removes low information tokens while preserving meaning."
+)
 
     print(f"Loading model: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -83,6 +86,8 @@ def main() -> None:
 
     inputs = tokenizer(prompt, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
+
+    print("Original token length:", inputs["input_ids"].shape[1])
 
     # Warm-up (optional but helps timing stability)
     _ = run_forward(model, inputs)
@@ -111,13 +116,19 @@ def main() -> None:
 
     elif ONN_MODE == "active_det":
         cfg = ONNConfig(
-            d_model=d_model,
-            feature_dim=8,
-            projector_kind="residual_det",
-            epsilon=0.001,
-            seed=42,
+        d_model=d_model,
+        feature_dim=8,
+        projector_kind="residual_det",
+        epsilon=0.001,
+        seed=42,
+
+        # Option 1.5
+        compression="onn_gated",
+        onn_gate_quantile=0.25,
+        onn_gate_threshold=1.4,
+        onn_gate_min_run=2,
         )
-        print("\nONN_MODE=active_det (residual deterministic; epsilon=0.001, seed=42)")
+        print("\nONN_MODE=active_det (epsilon=0.001; compression=onn_gated)")
 
     else:
         raise ValueError("ONN_MODE must be 'safe', 'active', or 'active_det'")
@@ -129,6 +140,9 @@ def main() -> None:
     # -------------------------
     unwrap_llama_from_onn(model)
     wrap_llama_for_onn(model, onn, store_last_report=True)
+
+    # After first ONN forward, the hook will store compression report (if enabled)
+
     print("Wrapped model projector =", type(model.onn_preprocessor.projector).__name__)
 
 
@@ -138,15 +152,32 @@ def main() -> None:
     # ONN timing
     t2 = time.perf_counter()
     logits_onn = run_forward(model, inputs)
+
+    if model.onn_report and model.onn_report.last and "compression" in model.onn_report.last:
+        comp = model.onn_report.last["compression"]
+        # comp might be nested dict
+        comp_info = comp.get("compression", comp)
+        print("Compressed token length:", comp_info.get("compressed_len"))
+        print("Compression method:", comp_info.get("method"))
+
     t3 = time.perf_counter()
 
     print("\nWith ONN (v0.L augment):")
     print("  logits shape:", tuple(logits_onn.shape))
     print(f"  forward time: {_ms(t2, t3):.2f} ms")
 
-    # Compare outputs lightly (not expecting equality because embeddings changed)
-    delta = (logits_onn - logits_base).abs().mean().item()
-    print(f"\nMean |logits_onn - logits_base|: {delta:.6f}")
+    # Compare outputs (if compression changed sequence length, compare only the common prefix)
+    S_base = logits_base.shape[1]
+    S_onn = logits_onn.shape[1]
+    S = min(S_base, S_onn)
+
+    delta = (logits_onn[:, :S, :] - logits_base[:, :S, :]).abs().mean().item()
+    print(f"\nMean |logits_onn - logits_base| over first {S} tokens: {delta:.6f}")
+
+    if S_base != S_onn:
+        ratio = S_onn / S_base
+        print(f"Compression ratio: {ratio:.2f} ({S_base} -> {S_onn})")
+        print(f"Sanity delta (prefix {S} tokens): {delta:.6f}")
 
     # Print ONN report summary
     if hasattr(model, "onn_report") and model.onn_report and model.onn_report.last:
@@ -154,8 +185,12 @@ def main() -> None:
     else:
         print("\nNo ONN report found (store_last_report=False?).")
 
-    print("Done.")
+    if model.onn_report and model.onn_report.last and "compression" in model.onn_report.last:
+        comp = model.onn_report.last["compression"]
+        comp_info = comp.get("compression", comp)
+        print("Compression report:", model.onn_report.last["compression"])
 
+    print("Done.")
 
 if __name__ == "__main__":
     main()

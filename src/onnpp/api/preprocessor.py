@@ -8,6 +8,7 @@ import torch
 from onnpp.core.config import ONNConfig
 from onnpp.core.featurizer import SimpleTokenFeaturizer
 from onnpp.core.projector import ConcatProjector, ResidualDeterministicProjector
+from onnpp.core.compress import rle_compress_input_ids
 
 
 EmbedFn = Callable[[torch.Tensor], torch.Tensor]
@@ -55,6 +56,7 @@ class ONNPreprocessor(torch.nn.Module):
             else:
                 raise ValueError(f"Unknown projector_kind: {config.projector_kind}")
 
+
     @torch.no_grad()
     def augment_embeddings(
         self,
@@ -101,3 +103,61 @@ class ONNPreprocessor(torch.nn.Module):
             "projector": proj_report,
         }
         return E_aug, report
+    
+       
+    @torch.no_grad()
+    def compress_tokens(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+    ):
+        """
+        Option 1: compression. Supports:
+          - none
+          - rle (v0.M1)
+          - onn_gated (Option 1.5)
+        Returns: (input_ids_c, attention_mask_c, report_dict)
+        """
+        cfg = self.config
+
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids, dtype=torch.int64)
+
+        # normalize mask dtype
+        if attention_mask.dtype != torch.int64:
+            attention_mask = attention_mask.to(torch.int64)
+
+        if getattr(cfg, "compression", "none") == "none":
+            valid_len = int(attention_mask.sum().item())
+            return input_ids, attention_mask, {
+                "compression": {"method": "none", "original_len": valid_len, "compressed_len": valid_len}
+            }
+
+        if cfg.compression == "rle":
+            from onnpp.core.compress import rle_compress_input_ids
+            ids_c, mask_c, rep = rle_compress_input_ids(
+                input_ids,
+                attention_mask,
+                min_run=cfg.rle_min_run,
+                keep=cfg.rle_keep,
+            )
+            return ids_c, mask_c, {"compression": rep.__dict__}
+
+        if cfg.compression == "onn_gated":
+            from onnpp.core.compress import onn_gated_compress_input_ids
+
+            # Compute features on original stream (cheap O(S))
+            F, _ = self.featurizer(input_ids)
+
+            ids_c, mask_c, rep = onn_gated_compress_input_ids(
+                input_ids,
+                F,
+                attention_mask,
+                threshold=cfg.onn_gate_threshold,
+                quantile=getattr(cfg, "onn_gate_quantile", None),
+                min_run=cfg.onn_gate_min_run,
+            )
+            return ids_c, mask_c, {"compression": rep}
+
+        raise ValueError(f"Unknown compression kind: {cfg.compression}")
+
