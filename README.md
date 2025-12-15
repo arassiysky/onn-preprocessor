@@ -56,3 +56,20 @@ projector_kind = "residual_det"
 epsilon = 0.001
 feature_dim = 8
 deterministic seed = 42
+
+
+Operator-Gated Token Compression (Option 1.5)
+
+tgt    | orig   | compRLE | compQ25  | compQ35  | base_ms   | rle_ms    | q25_ms    | q35_ms
+------ | ------ | ------- | -------- | -------- | --------- | --------- | --------- | --------
+128    | 152    | 152     | 136      | 140      | 875       | 882       | 791       | 831
+256    | 271    | 271     | 242      | 252      | 1399      | 1458      | 1281      | 1313
+512    | 554    | 554     | 496      | 526      | 3152      | 3264      | 2773      | 2955
+1024   | 1086   | 1086    | 973      | 1047     | 7480      | 7120      | 6496      | 7041    
+
+Legend:
+  compRLE  = avg compressed token length using RLE
+  compQ25  = avg compressed token length using onn_gated (quantile=0.25, min_run=2)
+  compQ35  = avg compressed token length using onn_gated (quantile=0.35, min_run=3)
+  *_ms     = avg forward latency in ms (lower is better)
+  

@@ -13,6 +13,7 @@ src/onnpp/api/preprocessor.py
 src/onnpp/cli/__init__.py
 src/onnpp/cli/main.py
 src/onnpp/core/__init__.py
+src/onnpp/core/compress.py
 src/onnpp/core/config.py
 src/onnpp/core/featurizer.py
 src/onnpp/core/projector.py
