@@ -116,70 +116,93 @@ class L2Policy:
         return kept
 
     def decide_from_scores(
-        self,
-        *,
-        seq_len: int,
-        task_mode: str,
-        is_sampling: bool,
-        scores: torch.Tensor,
-    ) -> Dict[str, Any]:
-        if seq_len < self.min_len_enable:
-            if seq_len < 300:
-                    return {
-                        "enabled": False,
-                        "quantile": None,
-                        "min_run": self.min_run_code if task_mode == "code" else self.min_run_text,
-                        "note": "disabled: short(<300)",
-                    }
-            # --- Greedy-only guard band (empirical, GPU-friendly) ---
-            if not is_sampling:
-                if seq_len >= 800:
-                    return {
-                        "enabled": False,
-                        "quantile": None,
-                        "min_run": self.min_run_code if task_mode == "code" else self.min_run_text,
-                        "note": "disabled: greedy-long(>=800)",
-                    }
+    self,
+    *,
+    seq_len: int,
+    task_mode: str,
+    is_sampling: bool,
+    scores: torch.Tensor,
+) -> Dict[str, Any]:
+    # =========================================================
+    # 0) Hard gates (must NOT be nested under min_len_enable)
+    # =========================================================
 
-        min_run = self.min_run_code if task_mode == "code" else self.min_run_text
+    # HARD disable ONN for short sequences (avoid overhead)
+    if seq_len < 300:
+        return {
+            "enabled": False,
+            "quantile": None,
+            "min_run": self.min_run_code if task_mode == "code" else self.min_run_text,
+            "note": "disabled: short(<300)",
+        }
 
-        # choose regime-specific thresholds
-        if is_sampling:
-            min_saved = self.sampling_min_saved_frac
-            max_drop = self.sampling_max_drop_frac
-        else:
-            min_saved = self.greedy_min_saved_frac
-            max_drop = self.greedy_max_drop_frac
+    # HARD disable ONN compression at very long contexts (empirical: avoids decode regressions)
+    # Applies to BOTH greedy and sampling (based on your latest benchmark evidence).
+    if seq_len >= 900:
+        return {
+            "enabled": False,
+            "quantile": None,
+            "min_run": self.min_run_code if task_mode == "code" else self.min_run_text,
+            "note": "disabled: long(>=900)",
+        }
 
-        q = self._base_quantile(seq_len, task_mode, is_sampling=is_sampling)
+    # (Optional) Greedy-only extra guard band (keep if you want stricter greedy control)
+    # If you keep the >=900 global gate, you can delete this block entirely.
+    # if (not is_sampling) and (seq_len >= 800):
+    #     return {
+    #         "enabled": False,
+    #         "quantile": None,
+    #         "min_run": self.min_run_code if task_mode == "code" else self.min_run_text,
+    #         "note": "disabled: greedy-long(>=800)",
+    #     }
 
+    # =========================================================
+    # 1) Normal policy logic
+    # =========================================================
+
+    min_run = self.min_run_code if task_mode == "code" else self.min_run_text
+
+    # choose regime-specific thresholds
+    if is_sampling:
+        min_saved = self.sampling_min_saved_frac
+        max_drop = self.sampling_max_drop_frac
+    else:
+        min_saved = self.greedy_min_saved_frac
+        max_drop = self.greedy_max_drop_frac
+
+    # Extra strictness in the borderline regime (helps avoid 256 regressions)
+    if seq_len < 384:
+        min_saved = max(min_saved, 0.08)
+
+    q = self._base_quantile(seq_len, task_mode, is_sampling=is_sampling)
+
+    thr = float(torch.quantile(scores, torch.tensor(q, device=scores.device)))
+    kept = self._predict_kept(scores, thr, min_run)
+    saved_frac = 1.0 - kept / float(seq_len)
+
+    # disable if too little predicted saving (avoid overhead regression)
+    if saved_frac < min_saved:
+        return {
+            "enabled": False,
+            "quantile": None,
+            "min_run": min_run,
+            "note": f"disabled: saved={saved_frac:.3f} < min_saved={min_saved:.3f}",
+        }
+
+    # if too aggressive, back off until within max_drop
+    while saved_frac > max_drop and q > 0.05:
+        q -= 0.03
         thr = float(torch.quantile(scores, torch.tensor(q, device=scores.device)))
         kept = self._predict_kept(scores, thr, min_run)
         saved_frac = 1.0 - kept / float(seq_len)
 
-        # disable if too little predicted saving (avoid overhead regression)
-        if saved_frac < min_saved:
-            return {
-                "enabled": False,
-                "quantile": None,
-                "min_run": min_run,
-                "note": f"disabled: saved={saved_frac:.3f} < min_saved={min_saved:.3f}",
-            }
-
-        # if too aggressive, back off until within max_drop
-        while saved_frac > max_drop and q > 0.05:
-            q -= 0.03
-            thr = float(torch.quantile(scores, torch.tensor(q, device=scores.device)))
-            kept = self._predict_kept(scores, thr, min_run)
-            saved_frac = 1.0 - kept / float(seq_len)
-
-        mode = "sampling" if is_sampling else "greedy"
-        return {
-            "enabled": True,
-            "quantile": float(q),
-            "min_run": int(min_run),
-            "note": f"enabled({mode}): saved={saved_frac:.3f} q={q:.2f} max_drop={max_drop:.2f}",
-        }
+    mode = "sampling" if is_sampling else "greedy"
+    return {
+        "enabled": True,
+        "quantile": float(q),
+        "min_run": int(min_run),
+        "note": f"enabled({mode}): saved={saved_frac:.3f} q={q:.2f} max_drop={max_drop:.2f}",
+    }
 
 
 def _l2_policy_from_runtime(model: Any | None, cfg: ONNConfig) -> L2Policy:
